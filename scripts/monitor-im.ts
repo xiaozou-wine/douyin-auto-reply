@@ -472,8 +472,30 @@ async function main() {
             if (store?.conversations) return { conversations: store.conversations, source: 'store' };
             if (store?.conversationList) return { conversations: store.conversationList, source: 'store' };
           }
+          // 尝试从 React fiber 根节点遍历查找会话数据
+          const root = document.getElementById('root') || document.getElementById('__next');
+          if (root) {
+            const fiberKey = Object.keys(root).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+            if (fiberKey) {
+              // React fiber 存在，尝试从 memoizedState 链路中查找
+              const fiber = (root as any)[fiberKey];
+              if (fiber?.memoizedState?.memoizedState) {
+                let state = fiber.memoizedState;
+                for (let i = 0; i < 20 && state; i++) {
+                  const val = state.memoizedState;
+                  if (val && typeof val === 'object') {
+                    if (Array.isArray(val)) return { conversations: val, source: 'react-state' };
+                    if (val.conversations || val.conversationList) {
+                      return { conversations: val.conversations || val.conversationList, source: 'react-state' };
+                    }
+                  }
+                  state = state.next;
+                }
+              }
+            }
+          }
           // 尝试从 DOM 读取会话列表
-          const items = document.querySelectorAll('[class*="conversation"], [class*="session"], [class*="chat-item"]');
+          const items = document.querySelectorAll('[class*="conversation"], [class*="session"], [class*="chat-item"], [class*="msg-item"]');
           if (items.length > 0) {
             const convs: any[] = [];
             items.forEach((item: Element) => {
@@ -494,12 +516,52 @@ async function main() {
       }
     }
 
+    // 最后尝试：dump 页面 HTML 结构帮助定位会话元素
     if (imData.conversations.length === 0) {
-      log('❌ 无会话或请求失败');
-      if (seenUrls.length === 0) {
-        log('  未捕获到 IM API 请求 — IM SDK 可能使用 WebSocket 传输数据');
+      log('  分析页面 DOM 结构...');
+      try {
+        const domInfo = await page.evaluate(() => {
+          // 找所有文本包含「私信」或有 IM 相关属性的元素
+          const all = document.querySelectorAll('*');
+          const candidates: string[] = [];
+          for (const el of all) {
+            const cls = el.className?.toString?.() || '';
+            const id = el.id || '';
+            const text = el.textContent?.slice(0, 50) || '';
+            // 找会话相关的容器
+            if (cls.includes('session') || cls.includes('conversation') || cls.includes('chat-list')
+              || cls.includes('msg-list') || cls.includes('im-') || cls.includes('sidebar')
+              || id.includes('session') || id.includes('conversation') || id.includes('chat')) {
+              candidates.push(`<${el.tagName} class="${cls.slice(0,100)}" id="${id}"> children:${el.children.length} text:"${text.slice(0,30)}"`);
+            }
+          }
+          // 也找页面中的列表容器
+          const lists = document.querySelectorAll('ul, [role="list"]');
+          for (const list of lists) {
+            if (list.children.length > 1) {
+              const cls = list.className?.toString?.() || '';
+              candidates.push(`<${list.tagName} class="${cls.slice(0,100)}"> children:${list.children.length}`);
+            }
+          }
+          return candidates.slice(0, 20);
+        });
+        if (domInfo.length > 0) {
+          log(`  找到 ${domInfo.length} 个候选元素:`);
+          for (const d of domInfo) log(`    ${d}`);
+        } else {
+          log('  未找到会话相关 DOM 元素');
+        }
+      } catch (e) {
+        log(`  ⚠ DOM 分析失败: ${e}`);
       }
-      // 仍然输出页面截图信息帮助调试
+    }
+
+    if (imData.conversations.length === 0) {
+      log('❌ 未能获取会话列表');
+      if (seenUrls.length === 0) {
+        log('  IM SDK 使用 WebSocket 传输，HTTP 拦截无效');
+      }
+      // 输出页面信息帮助调试
       try {
         const title = await page.title();
         const url = page.url();
