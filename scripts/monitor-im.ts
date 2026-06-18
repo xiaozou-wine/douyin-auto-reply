@@ -419,15 +419,15 @@ async function main() {
     };
     page.on('response', urlHandler);
 
-    // 等待 IM 数据加载
+    // 等待页面 IM SDK 初始化
     log('📋 等待会话数据加载...');
+    // 等待足够时间让 IM SDK 完成初始化和数据拉取
     await new Promise<void>((resolve) => {
       let resolved = false;
-      const timeout = setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 25000);
+      const timeout = setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 20000);
       const handler = async (response: any) => {
         const url = response.url();
         try {
-          // 匹配会话列表相关 API
           if (url.includes('conversation') || url.includes('session_list') || url.includes('msg_list')) {
             const body = await response.json().catch(() => null);
             if (body) {
@@ -447,7 +447,6 @@ async function main() {
         } catch {}
       };
       page.on('response', handler);
-      // 触发刷新
       page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
     });
 
@@ -456,11 +455,56 @@ async function main() {
       log(`  📡 捕获到的 IM API: ${seenUrls.join(', ')}`);
     }
 
+    // 如果 HTTP 拦截没拿到数据，尝试从页面 JS 上下文读取
+    if (imData.conversations.length === 0) {
+      log('  尝试从页面 JS 上下文读取...');
+      try {
+        const pageData = await page.evaluate(() => {
+          const w = window as any;
+          // 尝试各种全局状态
+          const stores = [
+            w.__IM_STORE__,
+            w.__NEXT_DATA__?.props?.pageProps,
+            w.__STORE__,
+            w.__APP_DATA__,
+          ];
+          for (const store of stores) {
+            if (store?.conversations) return { conversations: store.conversations, source: 'store' };
+            if (store?.conversationList) return { conversations: store.conversationList, source: 'store' };
+          }
+          // 尝试从 DOM 读取会话列表
+          const items = document.querySelectorAll('[class*="conversation"], [class*="session"], [class*="chat-item"]');
+          if (items.length > 0) {
+            const convs: any[] = [];
+            items.forEach((item: Element) => {
+              const name = item.querySelector('[class*="name"], [class*="nick"]')?.textContent || '未知';
+              const id = item.getAttribute('data-id') || item.getAttribute('data-conv-id') || '';
+              if (id || name !== '未知') convs.push({ name, id });
+            });
+            if (convs.length > 0) return { conversations: convs, source: 'dom' };
+          }
+          return null;
+        });
+        if (pageData) {
+          log(`  📋 从 ${pageData.source} 获取到 ${pageData.conversations.length} 个会话`);
+          imData.conversations = pageData.conversations;
+        }
+      } catch (e) {
+        log(`  ⚠ 读取页面数据失败: ${e}`);
+      }
+    }
+
     if (imData.conversations.length === 0) {
       log('❌ 无会话或请求失败');
       if (seenUrls.length === 0) {
-        log('  未捕获到任何 IM API 请求，请检查 DOUYIN_COOKIE');
+        log('  未捕获到 IM API 请求 — IM SDK 可能使用 WebSocket 传输数据');
       }
+      // 仍然输出页面截图信息帮助调试
+      try {
+        const title = await page.title();
+        const url = page.url();
+        log(`  页面: ${title} (${url})`);
+      } catch {}
     } else {
       log(`找到 ${imData.conversations.length} 个会话：\n`);
       for (const c of imData.conversations) {
