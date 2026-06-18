@@ -1,0 +1,32 @@
+[Unit]
+Description=抖音私信自动回复服务
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=douyin-auto-reply
+WorkingDirectory=/opt/douyin-auto-reply
+ExecStart=/usr/bin/npx tsx scripts/monitor-im.ts
+Restart=always
+RestartSec=30
+
+# 资源限制（轻量服务）
+MemoryMax=100M
+CPUQuota=20%
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/douyin-auto-reply/data /opt/douyin-auto-reply/logs
+
+# 环境文件
+EnvironmentFile=/opt/douyin-auto-reply/.env
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=douyin-auto-reply
+
+[Install]
+WantedBy=multi-user.target

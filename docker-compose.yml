@@ -1,0 +1,20 @@
+services:
+  douyin-auto-reply:
+    build: .
+    container_name: douyin-auto-reply
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./images:/app/images  # 图片文件挂载
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.2"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
