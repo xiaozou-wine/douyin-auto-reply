@@ -409,29 +409,40 @@ async function main() {
   const { browser, page, imData } = await launchBrowser();
 
   if (listMode) {
+    // 先收集所有 IM 相关的 API URL，帮助调试
+    const seenUrls: string[] = [];
+    const urlHandler = (response: any) => {
+      const url = response.url();
+      if (url.includes('imapi.douyin.com') || url.includes('/im/') || url.includes('conversation')) {
+        seenUrls.push(url.split('?')[0]);
+      }
+    };
+    page.on('response', urlHandler);
+
     // 等待 IM 数据加载
     log('📋 等待会话数据加载...');
     await new Promise<void>((resolve) => {
       let resolved = false;
-      const timeout = setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 20000);
+      const timeout = setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 25000);
       const handler = async (response: any) => {
         const url = response.url();
         try {
-          if (url.includes('conversation') && url.includes('list')) {
+          // 匹配会话列表相关 API
+          if (url.includes('conversation') || url.includes('session_list') || url.includes('msg_list')) {
             const body = await response.json().catch(() => null);
             if (body) {
-              imData.conversations = body.conversation_list ?? body.data?.conversation_list ?? [];
-              log(`  📋 会话: ${imData.conversations.length}`);
+              imData.conversations = body.conversation_list ?? body.data?.conversation_list ?? body.session_list ?? [];
+              log(`  📋 捕获会话: ${imData.conversations.length} (${url.split('?')[0]})`);
             }
           }
-          if (url.includes('unread_count') || url.includes('unread/count')) {
+          if (url.includes('unread') || url.includes('badge')) {
             const body = await response.json().catch(() => null);
             if (body) {
               imData.unreadCount = body.inbox_type ?? body.unread_count ?? body.total_unread ?? 0;
             }
           }
           if (imData.conversations.length > 0) {
-            if (!resolved) { resolved = true; clearTimeout(timeout); page.off('response', handler); resolve(); }
+            if (!resolved) { resolved = true; clearTimeout(timeout); resolve(); }
           }
         } catch {}
       };
@@ -440,8 +451,16 @@ async function main() {
       page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
     });
 
+    // 输出捕获到的所有 IM API URL，方便调试
+    if (seenUrls.length > 0) {
+      log(`  📡 捕获到的 IM API: ${seenUrls.join(', ')}`);
+    }
+
     if (imData.conversations.length === 0) {
-      log('❌ 无会话或请求失败，请检查 DOUYIN_COOKIE');
+      log('❌ 无会话或请求失败');
+      if (seenUrls.length === 0) {
+        log('  未捕获到任何 IM API 请求，请检查 DOUYIN_COOKIE');
+      }
     } else {
       log(`找到 ${imData.conversations.length} 个会话：\n`);
       for (const c of imData.conversations) {
