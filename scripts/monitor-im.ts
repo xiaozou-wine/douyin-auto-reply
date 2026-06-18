@@ -144,13 +144,25 @@ function formatBytes(bytes: number): string {
 }
 
 function getDiskUsage(): { total: number; used: number; available: number } | null {
+  // Node.js 18+ 原生支持，跨平台
+  if (typeof (fs as any).statfsSync === 'function') {
+    try {
+      const s = (fs as any).statfsSync(ROOT);
+      const total = s.blocks * s.bsize;
+      const available = s.bavail * s.bsize;
+      const used = total - (s.bfree * s.bsize);
+      if (total > 0) return { total, used, available };
+    } catch {}
+  }
+  // 回退：Linux df 命令
   try {
     const output = execSync('df -B1 / | tail -1', { encoding: 'utf-8' });
     const parts = output.trim().split(/\s+/);
-    if (parts.length >= 4) {
-      return { total: parseInt(parts[1], 10), used: parseInt(parts[2], 10), available: parseInt(parts[3], 10) };
-    }
-  } catch { /* 非 Linux 忽略 */ }
+    const total = parseInt(parts[1], 10);
+    const used = parseInt(parts[2], 10);
+    const available = parseInt(parts[3], 10);
+    if (parts.length >= 4 && total > 0) return { total, used, available };
+  } catch {}
   return null;
 }
 
@@ -232,8 +244,7 @@ async function launchBrowser() {
       '--disable-gpu',
       '--disable-extensions',
       '--disable-background-networking',
-      '--single-process',          // 省内存
-      '--js-flags=--max-old-space-size=128',  // 限制 JS 堆
+      '--js-flags=--max-old-space-size=192',  // 限制 JS 堆
     ],
   });
 
@@ -343,9 +354,10 @@ async function sendMsgViaPage(page: any, conversationId: string, text: string): 
       }
       // 尝试 fetch 调用（页面上下文内有完整的签名机制）
       try {
-        const resp = await fetch('/aweme/v1/web/im/send/message?device_platform=webapp&aid=6383', {
+        const resp = await fetch('https://imapi.douyin.com/v1/client/send/message?device_platform=webapp&aid=6383', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({
             conversation_id: args.convId,
             content: JSON.stringify({ text: args.text }),
@@ -389,8 +401,60 @@ async function main() {
 
   cleanupDisk(config.cleanupKeepDays);
 
+  // --list 模式：启动浏览器获取会话列表后退出，用于获取 conversation_id
+  const listMode = process.argv.includes('--list');
+  log(`🔍 argv: ${JSON.stringify(process.argv)}, listMode: ${listMode}`);
+
   // 启动浏览器
   const { browser, page, imData } = await launchBrowser();
+
+  if (listMode) {
+    // 等待 IM 数据加载
+    log('📋 等待会话数据加载...');
+    await new Promise<void>((resolve) => {
+      let resolved = false;
+      const timeout = setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 20000);
+      const handler = async (response: any) => {
+        const url = response.url();
+        try {
+          if (url.includes('conversation') && url.includes('list')) {
+            const body = await response.json().catch(() => null);
+            if (body) {
+              imData.conversations = body.conversation_list ?? body.data?.conversation_list ?? [];
+              log(`  📋 会话: ${imData.conversations.length}`);
+            }
+          }
+          if (url.includes('unread_count') || url.includes('unread/count')) {
+            const body = await response.json().catch(() => null);
+            if (body) {
+              imData.unreadCount = body.inbox_type ?? body.unread_count ?? body.total_unread ?? 0;
+            }
+          }
+          if (imData.conversations.length > 0) {
+            if (!resolved) { resolved = true; clearTimeout(timeout); page.off('response', handler); resolve(); }
+          }
+        } catch {}
+      };
+      page.on('response', handler);
+      // 触发刷新
+      page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    });
+
+    if (imData.conversations.length === 0) {
+      log('❌ 无会话或请求失败，请检查 DOUYIN_COOKIE');
+    } else {
+      log(`找到 ${imData.conversations.length} 个会话：\n`);
+      for (const c of imData.conversations) {
+        const id = c.conversation_id || c.id || 'N/A';
+        const name = c.user?.nickname || c.name || '未知';
+        const unread = c.unread_count || 0;
+        console.log(`  ${name}  →  conversation_id: ${id}  (未读: ${unread})`);
+      }
+      console.log('\n将目标 ID 填入 .env 的 MONITOR_PROACTIVE_TARGET_ID');
+    }
+    await browser.close();
+    process.exit(0);
+  }
 
   // 主循环
   while (true) {
