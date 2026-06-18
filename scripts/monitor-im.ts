@@ -258,30 +258,46 @@ async function launchBrowser() {
   await page.route('**/analytics*', route => route.abort());
   await page.route('**/log*', route => route.abort());
 
-  // 监听 IM 相关的网络响应，提取未读和会话信息
+  // IM 数据存储
   const imData = { unreadCount: 0, conversations: [] as any[] };
-  page.on('response', async (response: any) => {
-    const url = response.url();
-    try {
-      if (url.includes('unread_count') || url.includes('unread/count')) {
-        const body = await response.json().catch(() => null);
-        if (body) {
-          imData.unreadCount = body.inbox_type ?? body.unread_count ?? body.total_unread ?? 0;
+
+  // 加载抖音私信页面（触发 IM SDK 初始化）
+  log('📡 加载抖音私信页面...');
+
+  // 等待 IM API 响应的 Promise
+  const imReady = new Promise<void>((resolve) => {
+    let resolved = false;
+    const timeout = setTimeout(() => {
+      if (!resolved) { resolved = true; resolve(); }
+    }, 30000);
+
+    page.on('response', async (response: any) => {
+      const url = response.url();
+      try {
+        if (url.includes('unread_count') || url.includes('unread/count')) {
+          const body = await response.json().catch(() => null);
+          if (body) {
+            imData.unreadCount = body.inbox_type ?? body.unread_count ?? body.total_unread ?? 0;
+            log(`  📬 捕获未读数: ${imData.unreadCount}`);
+            if (!resolved) { resolved = true; clearTimeout(timeout); resolve(); }
+          }
         }
-      }
-      if (url.includes('conversation') && url.includes('list')) {
-        const body = await response.json().catch(() => null);
-        if (body) {
-          imData.conversations = body.conversation_list ?? body.data?.conversation_list ?? [];
+        if (url.includes('conversation') && url.includes('list')) {
+          const body = await response.json().catch(() => null);
+          if (body) {
+            imData.conversations = body.conversation_list ?? body.data?.conversation_list ?? [];
+            log(`  📋 捕获会话数: ${imData.conversations.length}`);
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    });
   });
 
-  // 加载抖音主页
-  log('📡 加载抖音...');
-  await page.goto('https://www.douyin.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-  log('✓ 页面加载完成');
+  await page.goto('https://www.douyin.com/message', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  log('✓ 私信页面加载完成');
+
+  // 等待 IM API 数据返回
+  await imReady;
 
   return { browser, context, page, imData };
 }
@@ -386,32 +402,83 @@ async function main() {
 
       log('--- 检查 ---');
 
-      // 刷新页面以触发最新的 IM 数据
-      await page.evaluate(() => window.scrollTo(0, 0));
+      // 刷新私信页面触发新的 API 请求
+      imData.unreadCount = 0;
+      imData.conversations = [];
 
-      // 获取未读数
-      const unread = await getUnreadCountViaPage(page);
+      const refreshDone = new Promise<void>((resolve) => {
+        let resolved = false;
+        const timeout = setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 15000);
+
+        const handler = async (response: any) => {
+          const url = response.url();
+          try {
+            if (url.includes('unread_count') || url.includes('unread/count')) {
+              const body = await response.json().catch(() => null);
+              if (body) {
+                imData.unreadCount = body.inbox_type ?? body.unread_count ?? body.total_unread ?? 0;
+                log(`  📬 未读: ${imData.unreadCount}`);
+              }
+            }
+            if (url.includes('conversation') && url.includes('list')) {
+              const body = await response.json().catch(() => null);
+              if (body) {
+                imData.conversations = body.conversation_list ?? body.data?.conversation_list ?? [];
+                log(`  📋 会话: ${imData.conversations.length}`);
+              }
+            }
+            if (imData.unreadCount >= 0 && imData.conversations.length >= 0) {
+              if (!resolved) { resolved = true; clearTimeout(timeout); page.off('response', handler); resolve(); }
+            }
+          } catch {}
+        };
+        page.on('response', handler);
+      });
+
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await refreshDone;
+
+      const unread = imData.unreadCount;
       if (unread < 0) {
-        log('⚠ 无法获取未读数，尝试刷新页面...');
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        log('⚠ 无法获取未读数，cookie 可能过期');
       } else if (unread > 0) {
         log(`📬 未读: ${unread}`);
         state.receivedToday = true;
 
-        // TODO: 获取会话列表并回复
-        // 这需要进一步研究页面内的 IM SDK 接口
-        log('  ℹ 检测到未读，会话处理待实现');
+        // 处理会话
+        for (const c of imData.conversations) {
+          const id = c.conversation_id || c.id || '';
+          const name = c.user?.nickname || c.name || id;
+          const count = c.unread_count || 0;
+          if (count <= 0) continue;
+          if (cfg.watchFriends.length > 0 && !cfg.watchFriends.includes(name)) continue;
+          if (state.sentToday[id]) { log(`  ${name}: 今日已回复`); continue; }
+
+          log(`💬 ${name}: ${count} 条未读`);
+          const ok = await sendMsgViaPage(page, id, cfg.defaultReply);
+          if (ok) {
+            log(`  ✓ 已回复`);
+            state.sentToday[id] = true;
+            delete state.pendingReplies[id];
+          } else {
+            // 记录待补发
+            if (!state.pendingReplies[id]) state.pendingReplies[id] = Date.now();
+          }
+        }
       } else {
         log('📭 无未读');
       }
 
       // 超时补发
       if (hours >= cfg.maxWaitHours) {
-        for (const [id, sent] of Object.entries(state.sentToday)) {
-          if (!sent) {
-            log(`⏰ ${id} 超时补发...`);
-            const ok = await sendMsgViaPage(page, id, cfg.defaultReply);
-            if (ok) { state.sentToday[id] = true; log('  ✓ 补发成功'); }
+        for (const [id, firstSeen] of Object.entries(state.pendingReplies)) {
+          const hoursWaiting = (Date.now() - firstSeen) / 3600000;
+          log(`⏰ ${id} 等待 ${hoursWaiting.toFixed(1)}h 超时，补发...`);
+          const ok = await sendMsgViaPage(page, id, cfg.defaultReply);
+          if (ok) {
+            state.sentToday[id] = true;
+            delete state.pendingReplies[id];
+            log('  ✓ 补发成功');
           }
         }
       }
