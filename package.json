@@ -4,7 +4,8 @@
   "private": true,
   "description": "抖音私信监听助手",
   "scripts": {
-    "monitor:im": "npx tsx scripts/monitor-im.ts"
+    "monitor:im": "npx tsx scripts/monitor-im.ts",
+    "monitor:list": "npx tsx scripts/monitor-im.ts --list"
   },
   "dependencies": {},
   "devDependencies": {

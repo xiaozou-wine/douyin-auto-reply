@@ -255,7 +255,7 @@ async function apiPost(url: string, body: any): Promise<ApiResponse | null> {
 
 /** 获取未读消息总数 */
 async function getUnreadCount(): Promise<number> {
-  const url = 'https://www.douyin.com/aweme/v1/web/im/unread/count?device_platform=webapp&aid=6383';
+  const url = 'https://imapi.douyin.com/v1/client/unread_count?device_platform=webapp&aid=6383';
   const d = await apiGet(url);
   if (!d) return -1;
   return d.unread_count ?? d.total_unread ?? 0;
@@ -272,7 +272,7 @@ interface Conversation {
 
 /** 获取会话列表 */
 async function getConversations(): Promise<Conversation[]> {
-  const url = 'https://www.douyin.com/aweme/v1/web/im/conversation/list?device_platform=webapp&aid=6383&count=20';
+  const url = 'https://imapi.douyin.com/v1/client/conversation/list?device_platform=webapp&aid=6383&count=20';
   const d = await apiGet(url);
   if (!d) return [];
   return d.conversation_list ?? d.data?.conversation_list ?? [];
@@ -280,7 +280,7 @@ async function getConversations(): Promise<Conversation[]> {
 
 /** 发送文本私信 */
 async function sendTextMsg(conversationId: string, text: string): Promise<boolean> {
-  const url = 'https://www.douyin.com/aweme/v1/web/im/send/message?device_platform=webapp&aid=6383';
+  const url = 'https://imapi.douyin.com/v1/client/send/message?device_platform=webapp&aid=6383';
   const d = await apiPost(url, {
     conversation_id: conversationId,
     content: JSON.stringify({ text }),
@@ -347,7 +347,7 @@ async function uploadImage(imagePath: string): Promise<{ uri: string; url: strin
 
   try {
     const r = await fetch(
-      'https://www.douyin.com/aweme/v1/web/im/image/upload/?device_platform=webapp&aid=6383',
+      'https://imapi.douyin.com/v1/client/im/image/upload/?device_platform=webapp&aid=6383',
       {
         method: 'POST',
         headers: {
@@ -386,7 +386,7 @@ async function uploadImage(imagePath: string): Promise<{ uri: string; url: strin
 
 /** 发送图片私信 */
 async function sendImageMsg(conversationId: string, image: { uri: string; url: string }): Promise<boolean> {
-  const url = 'https://www.douyin.com/aweme/v1/web/im/send/message?device_platform=webapp&aid=6383';
+  const url = 'https://imapi.douyin.com/v1/client/send/message?device_platform=webapp&aid=6383';
   const content = {
     text: '',
     image: {
@@ -528,6 +528,26 @@ function setupGracefulShutdown() {
 
 async function main() {
   loadEnv();
+
+  // --list 模式：打印会话列表后退出，用于获取 conversation_id
+  if (process.argv.includes('--list')) {
+    log('📋 查询会话列表...');
+    const convs = await getConversations();
+    if (convs.length === 0) {
+      log('❌ 无会话或请求失败，请检查 DOUYIN_COOKIE');
+    } else {
+      log(`找到 ${convs.length} 个会话：\n`);
+      for (const c of convs) {
+        const id = c.conversation_id || c.id || 'N/A';
+        const name = c.user?.nickname || c.name || '未知';
+        const unread = c.unread_count || 0;
+        console.log(`  ${name}  →  conversation_id: ${id}  (未读: ${unread})`);
+      }
+      console.log('\n将目标 ID 填入 .env 的 MONITOR_PROACTIVE_TARGET_ID');
+    }
+    process.exit(0);
+  }
+
   setupGracefulShutdown();
 
   log('🔊 私信监听启动（完整版）');
