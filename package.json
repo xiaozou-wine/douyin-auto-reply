@@ -7,7 +7,9 @@
     "monitor:im": "npx tsx scripts/monitor-im.ts",
     "monitor:list": "npx tsx scripts/monitor-im.ts --list"
   },
-  "dependencies": {},
+  "dependencies": {
+    "playwright-core": "^1.52.0"
+  },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "typescript": "^5.3.0"
