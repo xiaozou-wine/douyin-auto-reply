@@ -8,6 +8,11 @@ import json
 import urllib.parse
 import urllib.request
 
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+# 账号 ID 从 .env 读取，不再硬编码（与 check_sessionid.py 一致）。
 USER_ID = os.getenv("DOUYIN_USER_ID", "").strip()
 
 

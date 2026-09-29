@@ -7,8 +7,13 @@ import os
 import shutil
 import time
 
-USER_ID = os.getenv("DOUYIN_USER_ID", "").strip()
+from dotenv import load_dotenv
+
 ENV_PATH = ".env"
+load_dotenv(ENV_PATH)
+
+# 账号 ID 从 .env 读取，不再硬编码（与 check_sessionid.py 一致）。
+USER_ID = os.getenv("DOUYIN_USER_ID", "").strip()
 KEY = f"SESSIONID_{USER_ID}"
 
 
