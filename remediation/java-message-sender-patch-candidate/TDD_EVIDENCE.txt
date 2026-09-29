@@ -1,0 +1,37 @@
+TDD evidence — 2026-07-18
+
+Classifier RED
+Command:
+  javac --release 17 ... OfflineTestRunner.java SendResponseClassifierTest.java
+Expected failure observed:
+  cannot find symbol: SendResponseClassifier
+Note: the first command was run from the wrong directory, then the runner's optional seam-test reference was corrected so the verified RED failure isolated the missing classifier.
+
+Classifier GREEN
+Command:
+  javac --release 17 ... SendResponseClassifier.java
+  javac --release 17 ... OfflineTestRunner.java SendResponseClassifierTest.java
+  java -ea ... OfflineTestRunner
+Observed:
+  PASS 5 tests
+
+MessageSender seam RED
+Command:
+  javac --release 17 ... MessageSenderResponseParsingTest.java
+Expected failure observed after classpath preparation was corrected:
+  cannot find symbol: MessageSender.parseHttp200SendResponse(HttpResponse<byte[]>)
+
+MessageSender seam GREEN
+Command:
+  javac --release 17 ... SendResponseClassifier.java MessageSender.java
+  javac --release 17 ... OfflineTestRunner.java SendResponseClassifierTest.java MessageSenderResponseParsingTest.java
+  java -ea ... OfflineTestRunner
+Observed:
+  PASS 13 tests
+
+Additional review regression
+- Added a valid `OK` protobuf with failing `extra_info.status_code` and a body sentinel.
+- RED observed: `MessageSender.validateParsedSendResponse(...)` did not exist.
+- GREEN observed: `sender-extra-failure` passes and the sentinel/status code are absent from the error.
+
+All test inputs are synthetic and in-memory. The production JAR was read as a ZIP/classpath source only and was never executed. No HTTP client send method or Douyin endpoint was invoked.

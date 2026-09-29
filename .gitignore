@@ -1,5 +1,36 @@
 node_modules/
+dist/
 .env
-data/
-logs/
 *.log
+*.env.next.tmp-*
+.DS_Store
+
+# Python 字节码
+__pycache__/
+*.pyc
+
+# 实际发送的图片是私密内容（且可能含第三方版权素材），只保留目录占位
+images/*
+!images/.gitkeep
+
+# 运行时产物：只跟踪运维脚本，其余（登录态、截图、状态文件、探针）全部排除
+runtime/*
+!runtime/.gitkeep
+!runtime/*.mjs
+
+# Claude Code agent worktree：含 9 个嵌套 git 仓库，约 249MB
+.claude/
+
+# 含真实生产凭据（SESSIONID / COOKIES / 活 uifid）的私密恢复包，永不提交
+vps-production-backup-20260717-private/
+
+# 只提交源码：知识库、规划产物与测试都不入公开仓库
+memory/
+MEMORY.md
+docs/
+findings.md
+progress.md
+task.md
+task_plan.md
+tests/
+remediation/douyin-spark/tests/

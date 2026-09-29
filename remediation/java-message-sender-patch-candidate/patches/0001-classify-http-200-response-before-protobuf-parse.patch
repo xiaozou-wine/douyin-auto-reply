@@ -1,0 +1,258 @@
+diff --git a/reference/upstream/MessageSender.java b/src/main/java/com/dy_web_api/sdk/message/handler/MessageSender.java
+index 41a6bf5..7f4e773 100644
+--- a/reference/upstream/MessageSender.java
++++ b/src/main/java/com/dy_web_api/sdk/message/handler/MessageSender.java
+@@ -175,26 +175,13 @@ public class MessageSender {
+                 }
+                 
+                 SendMessageResponse.DySendMsgResponse resp =
+-                        SendMessageResponse.DySendMsgResponse.parseFrom(response.body());
+-                        
+-                if (!resp.getStatusMessage().equals("OK")) {
+-                    String errorMsg = "发送消息失败: " + resp.getStatusMessage();
+-                    log.error(errorMsg);
+-                    throw new DouyinMessageException(ErrorCode.MESSAGE_SEND_FAILED, errorMsg);
+-                }
+-                
++                        parseHttp200SendResponse(response);
++
+                 // 检查额外错误信息
+-                String extraInfo = resp.getMessageData().getMessageInfo().getExtraInfo();
+-                if (extraInfo != null && !extraInfo.isEmpty()) {
+-                    JSONObject extraMap = JSON.parseObject(extraInfo);
+-                    int statusCode = (int) extraMap.getOrDefault("status_code", 0);
+-                    if (statusCode != 0 && statusCode != 8101 && statusCode != 7174) {
+-                        JSONObject statusMsgObj = extraMap.getJSONObject("status_msg");
+-                        String errorMsg = String.format("发送消息失败: 状态码=%d, 错误信息=%s", statusCode, statusMsgObj);
+-                        log.error(errorMsg);
+-                        throw new DouyinMessageException(ErrorCode.MESSAGE_SEND_FAILED, errorMsg);
+-                    }
+-                }
++                validateParsedSendResponse(resp, SendResponseClassifier.classify(
++                        response.headers(),
++                        response.body()
++                ));
+                 
+                 return true;
+ 
+@@ -226,6 +213,78 @@ public class MessageSender {
+         });
+     }
+ 
++    static SendMessageResponse.DySendMsgResponse parseHttp200SendResponse(
++            HttpResponse<byte[]> response
++    ) {
++        SendResponseClassifier.Assessment assessment = SendResponseClassifier.classify(
++                response.headers(),
++                response.body()
++        );
++        if (!assessment.permitsProtobuf()) {
++            throw new DouyinMessageException(
++                    ErrorCode.MESSAGE_SEND_FAILED,
++                    assessment.metadata()
++            );
++        }
++
++        final SendMessageResponse.DySendMsgResponse parsed;
++        try {
++            parsed = SendMessageResponse.DySendMsgResponse.parseFrom(response.body());
++        } catch (com.google.protobuf.InvalidProtocolBufferException ignored) {
++            throw new DouyinMessageException(
++                    ErrorCode.MESSAGE_SEND_FAILED,
++                    assessment.metadata(
++                            "PROTOBUF_PARSE",
++                            SendResponseClassifier.Reason.MALFORMED_PROTOBUF
++                    )
++            );
++        }
++
++        if (!parsed.getStatusMessage().equals("OK")) {
++            throw new DouyinMessageException(
++                    ErrorCode.MESSAGE_SEND_FAILED,
++                    assessment.metadata(
++                            "POST_PARSE",
++                            SendResponseClassifier.Reason.REMOTE_APPLICATION_FAILURE
++                    )
++            );
++        }
++        return parsed;
++    }
++
++    static void validateParsedSendResponse(
++            SendMessageResponse.DySendMsgResponse parsed,
++            SendResponseClassifier.Assessment assessment
++    ) {
++        String extraInfo = parsed.getMessageData().getMessageInfo().getExtraInfo();
++        if (extraInfo == null || extraInfo.isEmpty()) {
++            return;
++        }
++        try {
++            JSONObject extraMap = JSON.parseObject(extraInfo);
++            int statusCode = extraMap.getIntValue("status_code", 0);
++            if (statusCode != 0 && statusCode != 8101 && statusCode != 7174) {
++                throw new DouyinMessageException(
++                        ErrorCode.MESSAGE_SEND_FAILED,
++                        assessment.metadata(
++                                "POST_PARSE",
++                                SendResponseClassifier.Reason.REMOTE_APPLICATION_FAILURE
++                        )
++                );
++            }
++        } catch (DouyinMessageException error) {
++            throw error;
++        } catch (RuntimeException ignored) {
++            throw new DouyinMessageException(
++                    ErrorCode.MESSAGE_SEND_FAILED,
++                    assessment.metadata(
++                            "POST_PARSE",
++                            SendResponseClassifier.Reason.REMOTE_APPLICATION_FAILURE
++                    )
++            );
++        }
++    }
++
+     public Map<String,Object> createConversation(Long sender, Long receiver) throws IOException, InterruptedException {
+         DySendMsgRequestOuterClass.DySendMsgRequest request = DySendMsgRequestOuterClass.DySendMsgRequest.parseFrom(Base64.getDecoder().decode(CREATE_CONVERSATION_TEMPLATE));
+         DySendMsgRequestOuterClass.CreateSessionRequest createSessionRequest = request.getSendMessageBody().getCreateSessionRequest().toBuilder()
+
+diff --git a/src/main/java/com/dy_web_api/sdk/message/handler/SendResponseClassifier.java b/src/main/java/com/dy_web_api/sdk/message/handler/SendResponseClassifier.java
+new file mode 100644
+index 0000000..a854895
+--- /dev/null
++++ b/src/main/java/com/dy_web_api/sdk/message/handler/SendResponseClassifier.java
+@@ -0,0 +1,135 @@
++package com.dy_web_api.sdk.message.handler;
++
++import java.net.http.HttpHeaders;
++import java.nio.charset.StandardCharsets;
++import java.util.Locale;
++
++final class SendResponseClassifier {
++    enum ContentTypeCategory {
++        PROTOBUF,
++        BINARY,
++        JSON,
++        HTML,
++        TEXT,
++        MISSING,
++        OTHER
++    }
++
++    enum MagicCategory {
++        EMPTY,
++        HTML_LIKE,
++        JSON_LIKE,
++        BINARY_OR_UNKNOWN
++    }
++
++    enum Reason {
++        PARSE_PERMITTED,
++        EMPTY_BODY,
++        HTML_BODY,
++        JSON_BODY,
++        NON_PROTOBUF_CONTENT_TYPE,
++        MALFORMED_PROTOBUF,
++        REMOTE_APPLICATION_FAILURE
++    }
++
++    record Assessment(
++            ContentTypeCategory contentType,
++            int byteLength,
++            MagicCategory magic,
++            Reason reason,
++            boolean permitsProtobuf
++    ) {
++        String metadata() {
++            return metadata("PRE_PARSE", reason);
++        }
++
++        String metadata(String stage, Reason safeReason) {
++            return "send-response"
++                    + " stage=" + stage
++                    + " reason=" + safeReason
++                    + " contentType=" + contentType
++                    + " byteLength=" + byteLength
++                    + " magic=" + magic;
++        }
++    }
++
++    private SendResponseClassifier() {
++    }
++
++    static Assessment classify(HttpHeaders headers, byte[] body) {
++        byte[] safeBody = body == null ? new byte[0] : body;
++        ContentTypeCategory contentType = classifyContentType(
++                headers == null ? null : headers.firstValue("content-type").orElse(null)
++        );
++        MagicCategory magic = classifyMagic(safeBody);
++
++        if (magic == MagicCategory.EMPTY) {
++            return new Assessment(contentType, 0, magic, Reason.EMPTY_BODY, false);
++        }
++        if (magic == MagicCategory.HTML_LIKE) {
++            return new Assessment(contentType, safeBody.length, magic, Reason.HTML_BODY, false);
++        }
++        if (magic == MagicCategory.JSON_LIKE) {
++            return new Assessment(contentType, safeBody.length, magic, Reason.JSON_BODY, false);
++        }
++        if (!isProtobufCompatible(contentType)) {
++            return new Assessment(
++                    contentType,
++                    safeBody.length,
++                    magic,
++                    Reason.NON_PROTOBUF_CONTENT_TYPE,
++                    false
++            );
++        }
++        return new Assessment(contentType, safeBody.length, magic, Reason.PARSE_PERMITTED, true);
++    }
++
++    private static ContentTypeCategory classifyContentType(String rawContentType) {
++        if (rawContentType == null || rawContentType.isBlank()) {
++            return ContentTypeCategory.MISSING;
++        }
++        String mediaType = rawContentType.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
++        if (mediaType.equals("application/x-protobuf")
++                || mediaType.equals("application/protobuf")
++                || mediaType.endsWith("+protobuf")) {
++            return ContentTypeCategory.PROTOBUF;
++        }
++        if (mediaType.equals("application/octet-stream")) {
++            return ContentTypeCategory.BINARY;
++        }
++        if (mediaType.equals("application/json") || mediaType.endsWith("+json")) {
++            return ContentTypeCategory.JSON;
++        }
++        if (mediaType.equals("text/html") || mediaType.equals("application/xhtml+xml")) {
++            return ContentTypeCategory.HTML;
++        }
++        if (mediaType.startsWith("text/")) {
++            return ContentTypeCategory.TEXT;
++        }
++        return ContentTypeCategory.OTHER;
++    }
++
++    private static MagicCategory classifyMagic(byte[] body) {
++        int index = 0;
++        while (index < body.length && Character.isWhitespace(body[index] & 0xff)) {
++            index++;
++        }
++        if (index == body.length) {
++            return MagicCategory.EMPTY;
++        }
++        int first = body[index] & 0xff;
++        if (first == '<') {
++            return MagicCategory.HTML_LIKE;
++        }
++        if (first == '{' || first == '[') {
++            return MagicCategory.JSON_LIKE;
++        }
++        return MagicCategory.BINARY_OR_UNKNOWN;
++    }
++
++    private static boolean isProtobufCompatible(ContentTypeCategory contentType) {
++        return contentType == ContentTypeCategory.PROTOBUF
++                || contentType == ContentTypeCategory.BINARY
++                || contentType == ContentTypeCategory.MISSING;
++    }
++}

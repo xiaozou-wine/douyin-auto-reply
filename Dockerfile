@@ -1,27 +1,20 @@
-FROM node:20-alpine
+FROM mcr.microsoft.com/playwright:v1.61.1-jammy
 
-LABEL description="抖音私信自动回复 + 主动发信 + 磁盘清理"
+LABEL description="抖音单好友续火花自动发图服务"
 
 WORKDIR /app
 
-# 安装 pnpm
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 
-# 先复制依赖文件，利用 Docker 缓存层
-COPY package.json ./
-# pnpm-lock.yaml 存在时使用 --frozen-lockfile，否则直接 install
-RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
-# 复制项目文件
-COPY scripts/ ./scripts/
+COPY tsconfig.json ./
+COPY src ./src
+RUN pnpm build && pnpm prune --prod
 
-# 创建数据和日志目录
-RUN mkdir -p /app/data /app/logs
+RUN mkdir -p /app/runtime/browser-profile /app/runtime/screenshots /app/images
 
-# 健康检查
-HEALTHCHECK --interval=60s --timeout=5s --retries=3 \
-  CMD pgrep -f "tsx scripts/monitor-im" > /dev/null || exit 1
+VOLUME ["/app/runtime", "/app/images"]
 
-VOLUME ["/app/data", "/app/logs"]
-
-CMD ["npx", "tsx", "scripts/monitor-im.ts"]
+CMD ["node", "dist/src/index.js"]

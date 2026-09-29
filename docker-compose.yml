@@ -5,16 +5,12 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./images:/app/images  # 图片文件挂载
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-          cpus: "0.2"
+      - ./runtime:/app/runtime
+      - ./images:/app/images
+      - ./.env:/app/.env:ro
+    shm_size: "1gb"
     logging:
       driver: json-file
       options:
-        max-size: "5m"
+        max-size: "10m"
         max-file: "3"
